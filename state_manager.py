@@ -24,7 +24,8 @@ DEFAULT_STATE = {
     "goals_at_pick": 0,
     "minute_at_pick": None,
     "edge_score": None,
-    "pick_timestamp": None
+    "pick_timestamp": None,
+    "history_match_ids": []
 }
 
 class StateManager:
@@ -53,10 +54,17 @@ class StateManager:
             logger.error(f"Failed to save state to {self.file_path}: {e}")
 
     def lock_bet(self, match_info: dict, pick_info: dict):
-        """Lock the bot onto an active bet."""
+        """Lock the bot onto an active bet and track match ID to prevent duplicate picks."""
+        match_id = str(match_info.get("id"))
+        history = list(self.state.get("history_match_ids", []))
+        if match_id not in history:
+            history.append(match_id)
+        if len(history) > 500:
+            history = history[-500:]
+
         self.state.update({
             "is_locked": True,
-            "active_match_id": str(match_info.get("id")),
+            "active_match_id": match_id,
             "home_team": match_info.get("home", {}).get("name", "Home Team"),
             "away_team": match_info.get("away", {}).get("name", "Away Team"),
             "league": match_info.get("league", {}).get("name", "League"),
@@ -70,16 +78,23 @@ class StateManager:
             "goals_at_pick": pick_info.get("current_goals", 0),
             "minute_at_pick": pick_info.get("minute"),
             "edge_score": pick_info.get("edge_score"),
-            "pick_timestamp": pick_info.get("timestamp")
+            "pick_timestamp": pick_info.get("timestamp"),
+            "history_match_ids": history
         })
         self.save_state()
         logger.info(f"Bot LOCKED on match {self.state['active_match_id']} ({self.state['prediction']})")
 
     def unlock_bet(self):
-        """Reset lock to allow new predictions."""
+        """Reset lock to allow new predictions while preserving match history to avoid duplicate picks."""
+        history = list(self.state.get("history_match_ids", []))
         self.state = DEFAULT_STATE.copy()
+        self.state["history_match_ids"] = history
         self.save_state()
         logger.info("Bot UNLOCKED. Scanning for new opportunities.")
+
+    def is_match_already_picked(self, match_id: str) -> bool:
+        """Check if a match has already been picked before to prevent duplicate bets on the same game."""
+        return str(match_id) in self.state.get("history_match_ids", [])
 
     @property
     def is_locked(self) -> bool:
