@@ -2,10 +2,16 @@
 Settlement Engine for locked bets.
 Monitors active game status and determines WON / LOST outcomes.
 """
+import time
 import logging
 from engine import parse_score
 
 logger = logging.getLogger("settlement")
+
+# Max minutes to wait before force-settling on current score
+# (handles APIs that never return timeStatus=3 for some leagues)
+FORCE_SETTLE_AFTER_MINUTES = 130
+
 
 def evaluate_strict_total_outcome(direction: str, target_line: float, total_goals: int) -> tuple:
     """
@@ -38,6 +44,7 @@ def evaluate_strict_total_outcome(direction: str, target_line: float, total_goal
     else:
         return "LOST", f"Full Loss ({diff:.2f} from line {target_line})"
 
+
 class SettlementEngine:
     def __init__(self, api_client, league_mgr=None, streak_tracker=None):
         self.api_client = api_client
@@ -67,6 +74,61 @@ class SettlementEngine:
                     self.league_mgr.record_loss(league_id, league_name, direction, match_desc)
         return outcome
 
+    def _check_force_settle(self, state: dict, scores: str, total_goals: int,
+                             time_status: str, match_minute) -> dict | None:
+        """
+        Force-settle checks for matches where the API gets stuck and never
+        returns timeStatus=3. Returns a settled outcome dict or None.
+
+        Triggers when ANY of the following are true:
+          1. Elapsed time since pick > FORCE_SETTLE_AFTER_MINUTES
+          2. timeStatus=2 (half-time signal) AND minute > 90
+             (some APIs return HT=2 at FT instead of 3)
+        """
+        direction = state.get("direction")
+        target_line = state.get("target_line")
+
+        # --- Trigger 1: Elapsed time timeout ---
+        pick_ts = state.get("pick_timestamp")
+        elapsed_min = 0
+        if pick_ts:
+            elapsed_min = (time.time() - pick_ts) / 60
+
+        if elapsed_min >= FORCE_SETTLE_AFTER_MINUTES:
+            res, note = evaluate_strict_total_outcome(direction, target_line, total_goals)
+            logger.warning(
+                f"FORCE SETTLE triggered (elapsed={elapsed_min:.0f} min > {FORCE_SETTLE_AFTER_MINUTES} min). "
+                f"timeStatus={time_status}, score={scores}"
+            )
+            return self._record_outcome(state, {
+                "is_settled": True,
+                "result": res,
+                "final_score": scores,
+                "note": f"Force-settled after {elapsed_min:.0f} min (API stuck at timeStatus={time_status}). {note}"
+            })
+
+        # --- Trigger 2: API returns timeStatus=2 at minute > 90 ---
+        # On Inforadar some competitions report timeStatus=2 instead of 3 at FT
+        if time_status == "2" and match_minute is not None:
+            try:
+                minute_int = int(match_minute)
+            except (ValueError, TypeError):
+                minute_int = 0
+
+            if minute_int >= 90:
+                res, note = evaluate_strict_total_outcome(direction, target_line, total_goals)
+                logger.warning(
+                    f"FORCE SETTLE triggered (timeStatus=2 at minute={minute_int} >= 90). "
+                    f"API likely stuck at HT code after FT. score={scores}"
+                )
+                return self._record_outcome(state, {
+                    "is_settled": True,
+                    "result": res,
+                    "final_score": scores,
+                    "note": f"Force-settled: API returned timeStatus=2 at minute {minute_int} (likely FT). {note}"
+                })
+
+        return None  # Not yet triggered
 
     def check_match_settlement(self, state: dict) -> dict:
         """
@@ -93,14 +155,25 @@ class SettlementEngine:
         time_status = str(game_data.get("timeStatus", ""))
         scores = game_data.get("scores", "0-0")
         h_score, a_score, total_goals = parse_score(scores)
+        match_minute = (game_data.get("time") or {}).get("tm")
 
-        logger.info(f"Checking locked match {match_id}: score={scores} (Total: {total_goals}), line={target_line}, timeStatus={time_status}")
+        # Calculate elapsed minutes for logging
+        pick_ts = state.get("pick_timestamp")
+        elapsed_str = ""
+        if pick_ts:
+            elapsed_min = (time.time() - pick_ts) / 60
+            elapsed_str = f", elapsed={elapsed_min:.0f}m"
+
+        logger.info(
+            f"Checking locked match {match_id}: score={scores} (Total: {total_goals}), "
+            f"line={target_line}, timeStatus={time_status}, minute={match_minute}{elapsed_str}"
+        )
 
         # -----------------
         # OVER Settlement
         # -----------------
         if direction == "OVER":
-            # Early Full Win: If current goals exceed target line by >= 0.5, Full Win is mathematically guaranteed!
+            # Early Full Win: goals exceed line by >= 0.5 → mathematically guaranteed
             diff = round(total_goals - target_line, 2)
             if diff >= 0.5:
                 return self._record_outcome(state, {
@@ -110,7 +183,7 @@ class SettlementEngine:
                     "note": f"Full Win confirmed! Total goals: {total_goals} >= Line {target_line} + 0.5"
                 })
 
-            # Finished match settlement
+            # Normal finish (timeStatus=3)
             if time_status == "3":
                 res, note = evaluate_strict_total_outcome(direction, target_line, total_goals)
                 return self._record_outcome(state, {
@@ -124,7 +197,7 @@ class SettlementEngine:
         # UNDER Settlement
         # -----------------
         elif direction == "UNDER":
-            # Early Full Loss: If current goals already exceed line by >= 0.5, bet is mathematically lost
+            # Early Full Loss: goals already exceed line by >= 0.5
             diff = round(target_line - total_goals, 2)
             if diff <= -0.5:
                 return self._record_outcome(state, {
@@ -134,7 +207,7 @@ class SettlementEngine:
                     "note": f"Full Loss confirmed. Total goals: {total_goals} exceeded line {target_line}"
                 })
 
-            # Finished match settlement
+            # Normal finish (timeStatus=3)
             if time_status == "3":
                 res, note = evaluate_strict_total_outcome(direction, target_line, total_goals)
                 return self._record_outcome(state, {
@@ -152,5 +225,12 @@ class SettlementEngine:
                 "final_score": scores,
                 "note": f"Match cancelled or abandoned (timeStatus={time_status})"
             })
+
+        # -----------------
+        # Force-settle fallback (API stuck — never returns timeStatus=3)
+        # -----------------
+        force = self._check_force_settle(state, scores, total_goals, time_status, match_minute)
+        if force:
+            return force
 
         return {"is_settled": False}
