@@ -47,11 +47,13 @@ class SettlementEngine:
     def _record_outcome(self, state: dict, outcome: dict) -> dict:
         if outcome.get("is_settled"):
             result = outcome.get("result")
+            direction = state.get("direction", "OVER")  # "OVER" or "UNDER"
+
             # Update streak records
             if self.streak_tracker and result in ["WON", "LOST"]:
                 outcome["streak_summary"] = self.streak_tracker.record_bet_result(result)
 
-            # Update league performance records
+            # Update per-league, per-direction performance records
             if self.league_mgr:
                 league_id = state.get("league_id")
                 league_name = state.get("league")
@@ -60,10 +62,11 @@ class SettlementEngine:
                 match_desc = f"{home} vs {away}"
 
                 if result == "WON" and league_name:
-                    self.league_mgr.record_win(league_id, league_name, match_desc)
+                    self.league_mgr.record_win(league_id, league_name, direction, match_desc)
                 elif result == "LOST" and league_name:
-                    self.league_mgr.record_loss(league_id, league_name, match_desc)
+                    self.league_mgr.record_loss(league_id, league_name, direction, match_desc)
         return outcome
+
 
     def check_match_settlement(self, state: dict) -> dict:
         """

@@ -74,16 +74,32 @@ class TelegramNotifier:
         event_id = html.escape(str(match.get("id", "")))
         event_link = f'🆔 <b>Event ID:</b> <a href="https://inforadar.live/#/dashboard/soccer/game/{event_id}">#{event_id}</a>\n' if event_id else ""
 
-        priority_tag = ""
-        if pick.get("is_priority_league"):
-            wins_cnt = pick.get("league_wins", 1)
-            priority_tag = f"⭐ <b>LEAGUE STATUS:</b> <code>HIGH PRIORITY ({wins_cnt}W)</code>\n"
+        # League direction bias badge
+        over_mod = pick.get("over_mod", 0)
+        under_mod = pick.get("under_mod", 0)
+        league_summary = pick.get("league_summary")
+        league_bias_tag = ""
+        if league_summary:
+            lsover = league_summary["over"]
+            lsunder = league_summary["under"]
+            if direction == "OVER" and (lsover["wins"] + lsover["losses"]) > 0:
+                league_bias_tag = (
+                    f"📊 <b>LEAGUE OVER RECORD:</b> "
+                    f"<code>{lsover['wins']}W-{lsover['losses']}L</code> "
+                    f"{'✅ Favoured' if over_mod > 0 else ('⚠️ Caution' if over_mod < 0 else '')}\n"
+                )
+            elif direction == "UNDER" and (lsunder["wins"] + lsunder["losses"]) > 0:
+                league_bias_tag = (
+                    f"📊 <b>LEAGUE UNDER RECORD:</b> "
+                    f"<code>{lsunder['wins']}W-{lsunder['losses']}L</code> "
+                    f"{'✅ Favoured' if under_mod > 0 else ('⚠️ Caution' if under_mod < 0 else '')}\n"
+                )
 
         msg = (
             f"🎯 <b>RADAR LIVE PICK DETECTED</b> 🎯\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🏆 <b>League:</b> {league}\n"
-            f"{priority_tag}"
+            f"{league_bias_tag}"
             f"⚔️ <b>Match:</b> <b>{home}</b> vs <b>{away}</b>\n"
             f"{event_link}"
             f"⏱ <b>In-Play:</b> <code>{minute}'</code> | <b>Current Score:</b> <code>{score}</code>\n"
@@ -123,19 +139,20 @@ class TelegramNotifier:
             status_text = f"<b>Result:</b> -1.00 Unit"
 
         league = html.escape(str(state.get("league", "League")))
+        direction = state.get("direction", "OVER")
         league_notice = ""
-        if result == "LOST":
+        if result == "WON":
             league_notice = (
-                f"🚫 <b>LEAGUE SHORTLISTED/BLACKLISTED:</b>\n"
-                f"• <code>{league}</code>\n"
-                f"<i>(League excluded from future picks due to this loss)</i>\n"
+                f"📈 <b>LEAGUE {direction} RECORD UPDATED:</b>\n"
+                f"• <code>{league}</code> — {direction} Win recorded ✅\n"
+                f"<i>(Positive bias applied to future {direction} picks from this league)</i>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
-        elif result == "WON":
+        elif result == "LOST":
             league_notice = (
-                f"⭐ <b>WIN LEAGUE PROMOTED:</b>\n"
-                f"• <code>{league}</code>\n"
-                f"<i>(Granted HIGH PRIORITY status for future match scans)</i>\n"
+                f"📉 <b>LEAGUE {direction} RECORD UPDATED:</b>\n"
+                f"• <code>{league}</code> — {direction} Loss recorded ❌\n"
+                f"<i>(Negative bias applied to future {direction} picks; bot may switch to {('UNDER' if direction == 'OVER' else 'OVER')} for this league)</i>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 

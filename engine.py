@@ -38,12 +38,8 @@ class PredictionEngine:
         Calculates match stats and edge score for a single live game.
         Returns evaluation dict or None if ineligible.
         """
-        # Check if league is blacklisted/shortlisted due to previous loss
         league_id = str(match.get("league", {}).get("id", ""))
         league_name = match.get("league", {}).get("name", "")
-        if self.league_mgr and self.league_mgr.is_league_banned(league_id, league_name):
-            logger.debug(f"Skipping match in blacklisted loss league: {league_name} (ID: {league_id})")
-            return None
 
         time_info = match.get("time") or {}
         minute = time_info.get("tm")
@@ -126,13 +122,16 @@ class PredictionEngine:
             if goal_diff >= 2:  # One team has put the game away, slower tempo
                 under_score += 15
 
-        # Check if league has winning history (High Priority status)
-        is_priority, win_count = False, 0
+        # Apply per-league, per-direction historical bias
+        dir_mods = {"over": 0, "under": 0}
         if self.league_mgr:
-            is_priority, win_count = self.league_mgr.is_league_priority(league_id, league_name)
-            if is_priority:
-                over_score += 15
-                under_score += 15
+            dir_mods = self.league_mgr.get_direction_modifiers(league_id, league_name)
+            over_score += dir_mods["over"]
+            under_score += dir_mods["under"]
+            if dir_mods["over"] != 0 or dir_mods["under"] != 0:
+                logger.debug(
+                    f"League '{league_name}' modifiers: OVER {dir_mods['over']:+d} / UNDER {dir_mods['under']:+d}"
+                )
 
         # Decide primary direction
         if over_score >= under_score and over_score >= MIN_EDGE_SCORE:
@@ -144,12 +143,18 @@ class PredictionEngine:
         else:
             return None
 
+        # Fetch league summary for display in alerts
+        league_summary = None
+        if self.league_mgr:
+            league_summary = self.league_mgr.get_league_summary(league_id)
+
         return {
             "match": match,
             "direction": direction,
             "edge_score": edge_score,
-            "is_priority_league": is_priority,
-            "league_wins": win_count,
+            "over_mod": dir_mods["over"],
+            "under_mod": dir_mods["under"],
+            "league_summary": league_summary,
             "minute": minute,
             "current_goals": current_goals,
             "sot_h": sot_h,
@@ -246,11 +251,15 @@ class PredictionEngine:
             logger.info(f"Scanned {len(live_games)} games; 0 met live statistical criteria.")
             return None
 
-        # Sort candidates: Winning/Priority leagues first, then descending by edge score
-        candidates.sort(key=lambda x: (1 if x.get("is_priority_league") else 0, x["edge_score"]), reverse=True)
+        # Sort by edge score descending (modifiers are already baked in)
+        candidates.sort(key=lambda x: x["edge_score"], reverse=True)
         top_cand = candidates[0]
-        p_badge = f" [⭐ HIGH PRIORITY LEAGUE ({top_cand.get('league_wins')}W)]" if top_cand.get("is_priority_league") else ""
-        logger.info(f"Found {len(candidates)} qualifying candidates. Top pick: {top_cand['edge_score']}%{p_badge}")
+        over_mod = top_cand.get("over_mod", 0)
+        under_mod = top_cand.get("under_mod", 0)
+        mod_badge = ""
+        if over_mod != 0 or under_mod != 0:
+            mod_badge = f" [League bias: OVER {over_mod:+d} / UNDER {under_mod:+d}]"
+        logger.info(f"Found {len(candidates)} qualifying candidates. Top pick: {top_cand['edge_score']}%{mod_badge}")
 
         # Check odds for the top candidate
         for top_candidate in candidates[:3]:

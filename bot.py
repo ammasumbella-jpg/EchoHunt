@@ -38,10 +38,11 @@ def run_bot():
     engine = PredictionEngine(api_client, league_mgr=league_mgr)
     settlement_engine = SettlementEngine(api_client, league_mgr=league_mgr, streak_tracker=streak_tracker)
 
-    banned_count = league_mgr.get_banned_count()
-    priority_count = league_mgr.get_priority_count()
+    tracked = league_mgr.get_tracked_count()
+    over_pref = league_mgr.get_over_preferred_count()
+    under_pref = league_mgr.get_under_preferred_count()
     summary = streak_tracker.get_summary()
-    logger.info(f"League Records: {priority_count} High-Priority | {banned_count} Banned.")
+    logger.info(f"League Records: {tracked} Tracked | {over_pref} OVER-favoured | {under_pref} UNDER-favoured.")
     logger.info(f"Streak Records: Current Win Streak={summary['current_win_streak']} | Best Win Streak={summary['best_win_streak']} | Worst Loss Streak={summary['worst_loss_streak']}")
     logger.info(f"Bot State on start: {'LOCKED' if state_mgr.is_locked else 'UNLOCKED'}")
     
