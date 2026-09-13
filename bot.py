@@ -87,15 +87,20 @@ def run_bot():
                         pred = best_pick.get("prediction")
                         odds = best_pick.get("odds")
                         score = best_pick.get("edge_score")
-                        logger.info(f"⚡ BEST PICK FOUND! Match {m_id} ({home} vs {away}) -> {pred} @ {odds} (Edge Score: {score}%)")
-                        
-                        # Send pick to Telegram
-                        delivered = notifier.send_pick_alert(match, best_pick)
-                        if delivered:
-                            # Lock bot state
-                            state_mgr.lock_bet(match, best_pick)
+
+                        # Guard: prevent picking the same match a second time
+                        if state_mgr.is_match_already_picked(str(m_id)):
+                            logger.info(f"Match {m_id} ({home} vs {away}) was already picked this session. Skipping duplicate.")
                         else:
-                            logger.error("Failed to notify Telegram; not locking state.")
+                            logger.info(f"⚡ BEST PICK FOUND! Match {m_id} ({home} vs {away}) -> {pred} @ {odds} (Edge Score: {score}%)")
+                            
+                            # Send pick to Telegram
+                            delivered = notifier.send_pick_alert(match, best_pick)
+                            if delivered:
+                                # Lock bot state
+                                state_mgr.lock_bet(match, best_pick)
+                            else:
+                                logger.error("Failed to notify Telegram; not locking state.")
                     else:
                         logger.info(f"No match passed the {MIN_EDGE_SCORE}% edge threshold and odds filter this cycle.")
                 else:
