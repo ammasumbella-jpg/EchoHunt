@@ -71,6 +71,9 @@ class TelegramNotifier:
 
         dir_icon = "📈" if direction == "OVER" else "📉"
 
+        event_id = html.escape(str(match.get("id", "")))
+        event_link = f'🆔 <b>Event ID:</b> <a href="https://inforadar.live/#/dashboard/soccer/game/{event_id}">#{event_id}</a>\n' if event_id else ""
+
         priority_tag = ""
         if pick.get("is_priority_league"):
             wins_cnt = pick.get("league_wins", 1)
@@ -82,6 +85,7 @@ class TelegramNotifier:
             f"🏆 <b>League:</b> {league}\n"
             f"{priority_tag}"
             f"⚔️ <b>Match:</b> <b>{home}</b> vs <b>{away}</b>\n"
+            f"{event_link}"
             f"⏱ <b>In-Play:</b> <code>{minute}'</code> | <b>Current Score:</b> <code>{score}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 <b>LIVE STATISTICAL MOMENTUM</b>\n"
@@ -157,6 +161,9 @@ class TelegramNotifier:
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 
+        event_id = html.escape(str(state.get("active_match_id", "")))
+        event_link = f'🆔 <b>Event ID:</b> <a href="https://inforadar.live/#/dashboard/soccer/game/{event_id}">#{event_id}</a>\n' if event_id else ""
+
         note_str = f"\n📝 <i>{html.escape(note)}</i>" if note else ""
 
         msg = (
@@ -164,6 +171,7 @@ class TelegramNotifier:
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🏆 <b>League:</b> {league}\n"
             f"⚔️ <b>Match:</b> {home} vs {away}\n"
+            f"{event_link}"
             f"🎯 <b>Selection:</b> <b>{prediction}</b>\n"
             f"🔢 <b>Score at Pick:</b> <code>{score_at_pick}</code>\n"
             f"🏁 <b>Settled Score:</b> <code>{final_score_esc}</code>\n"
