@@ -9,3 +9,9 @@ venv/
 .idea/
 .vscode/
 test_*.json
+
+# Runtime state files - never commit these, managed by Railway volume
+state.json
+streak_stats.json
+loss_leagues.json
+league_performance.json
