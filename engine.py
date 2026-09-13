@@ -1,0 +1,262 @@
+"""
+Prediction & Analytics Engine for Inforadar live data.
+Calculates Edge Scores and selects the optimal Total Over/Under opportunity.
+"""
+import time
+import logging
+from config import MIN_MATCH_MINUTE, MAX_MATCH_MINUTE, MIN_EDGE_SCORE, MIN_ODDS, MAX_ODDS
+
+logger = logging.getLogger("engine")
+
+def parse_stat_pair(stat_val) -> tuple:
+    """Safely parse [home, away] from API stats."""
+    if isinstance(stat_val, list) and len(stat_val) >= 2:
+        try:
+            return int(stat_val[0]), int(stat_val[1])
+        except (ValueError, TypeError):
+            pass
+    return 0, 0
+
+def parse_score(score_str: str) -> tuple:
+    """Parse '1-0' into (home, away, total_goals)."""
+    if not score_str or "-" not in str(score_str):
+        return 0, 0, 0
+    try:
+        parts = str(score_str).split("-")
+        h, a = int(parts[0].strip()), int(parts[1].strip())
+        return h, a, h + a
+    except (ValueError, IndexError):
+        return 0, 0, 0
+
+class PredictionEngine:
+    def __init__(self, api_client, league_mgr=None):
+        self.api_client = api_client
+        self.league_mgr = league_mgr
+
+    def evaluate_live_match(self, match: dict) -> dict:
+        """
+        Calculates match stats and edge score for a single live game.
+        Returns evaluation dict or None if ineligible.
+        """
+        # Check if league is blacklisted/shortlisted due to previous loss
+        league_id = str(match.get("league", {}).get("id", ""))
+        league_name = match.get("league", {}).get("name", "")
+        if self.league_mgr and self.league_mgr.is_league_banned(league_id, league_name):
+            logger.debug(f"Skipping match in blacklisted loss league: {league_name} (ID: {league_id})")
+            return None
+
+        time_info = match.get("time") or {}
+        minute = time_info.get("tm")
+        time_status = match.get("timeStatus")
+
+        # Must be in-play (timeStatus "1" or "2") and in target minute window
+        if str(time_status) not in ["1", "2"] or minute is None:
+            return None
+        
+        try:
+            minute = int(minute)
+        except ValueError:
+            return None
+
+        if minute < MIN_MATCH_MINUTE or minute > MAX_MATCH_MINUTE:
+            return None
+
+        stats = match.get("stats") or {}
+        sot_h, sot_a = parse_stat_pair(stats.get("on_target"))
+        da_h, da_a = parse_stat_pair(stats.get("dangerous_attacks"))
+        corn_h, corn_a = parse_stat_pair(stats.get("corners"))
+        
+        sot_total = sot_h + sot_a
+        da_total = da_h + da_a
+        corn_total = corn_h + corn_a
+
+        h_goals, a_goals, current_goals = parse_score(match.get("scores"))
+        goal_diff = abs(h_goals - a_goals)
+
+        # -----------------
+        # OVER Calculation (Statistical Edge backed by historical data)
+        # -----------------
+        over_score = 0
+
+        # Shots on Target is the #1 correlated factor (+21% Over rate)
+        if sot_total >= 11:
+            over_score += 45
+        elif sot_total >= 8:
+            over_score += 35
+        elif sot_total >= 6:
+            over_score += 25
+        elif sot_total >= 4:
+            over_score += 15
+
+        # Dangerous Attacks intensity
+        if da_total >= 110:
+            over_score += 25
+        elif da_total >= 80:
+            over_score += 18
+        elif da_total >= 55:
+            over_score += 10
+
+        # Corners pressure
+        if corn_total >= 8:
+            over_score += 10
+
+        # Close game pressure (0-0, 1-1, or 1-goal difference where teams must attack)
+        if goal_diff <= 1:
+            over_score += 15
+
+        # Prime 2nd half acceleration window
+        if 55 <= minute <= 78:
+            over_score += 10
+
+        # -----------------
+        # UNDER Calculation
+        # -----------------
+        under_score = 0
+        if minute >= 65:
+            if sot_total <= 2:
+                under_score += 45
+            elif sot_total <= 4:
+                under_score += 25
+
+            if da_total <= 50:
+                under_score += 25
+            elif da_total <= 70:
+                under_score += 15
+
+            if goal_diff >= 2:  # One team has put the game away, slower tempo
+                under_score += 15
+
+        # Check if league has winning history (High Priority status)
+        is_priority, win_count = False, 0
+        if self.league_mgr:
+            is_priority, win_count = self.league_mgr.is_league_priority(league_id, league_name)
+            if is_priority:
+                over_score += 15
+                under_score += 15
+
+        # Decide primary direction
+        if over_score >= under_score and over_score >= MIN_EDGE_SCORE:
+            direction = "OVER"
+            edge_score = min(99, over_score)
+        elif under_score > over_score and under_score >= MIN_EDGE_SCORE:
+            direction = "UNDER"
+            edge_score = min(99, under_score)
+        else:
+            return None
+
+        return {
+            "match": match,
+            "direction": direction,
+            "edge_score": edge_score,
+            "is_priority_league": is_priority,
+            "league_wins": win_count,
+            "minute": minute,
+            "current_goals": current_goals,
+            "sot_h": sot_h,
+            "sot_a": sot_a,
+            "da_h": da_h,
+            "da_a": da_a,
+            "corn_h": corn_h,
+            "corn_a": corn_a,
+        }
+
+    def fetch_verified_odds(self, candidate: dict) -> dict:
+        """
+        Fetches live odds for candidate from /soccer/game/odds?odds_market=3
+        and validates that the line is active and meets criteria.
+        """
+        match = candidate["match"]
+        match_id = match.get("id")
+        direction = candidate["direction"]
+        current_goals = candidate["current_goals"]
+
+        odds_data = self.api_client.get_game_odds(match_id, odds_market="3")
+        if not odds_data or not isinstance(odds_data, list):
+            logger.info(f"No odds returned for match {match_id}")
+            return None
+
+        # Find Total Goals market
+        total_market = None
+        for m in odds_data:
+            if isinstance(m, dict) and m.get("name") == "Total":
+                total_market = m
+                break
+
+        if not total_market or not total_market.get("odds"):
+            logger.info(f"Total market not found or empty for match {match_id}")
+            return None
+
+        # Look at the most recent live odds row
+        latest_tick = total_market["odds"][0]
+        # row1 = Over, row2 = Line, row3 = Under
+        row_names = total_market.get("rowsNames", ["Over", "Total", "Under"])
+        
+        try:
+            line_val = float(latest_tick.get("row2"))
+            over_val = latest_tick.get("row1")
+            under_val = latest_tick.get("row3")
+
+            over_odds = float(over_val) if over_val is not None else None
+            under_odds = float(under_val) if under_val is not None else None
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Failed to parse odds row: {latest_tick} ({e})")
+            return None
+
+        selected_odds = None
+        target_line = line_val
+
+        if direction == "OVER":
+            if over_odds and over_odds >= MIN_ODDS and over_odds <= MAX_ODDS:
+                # Must be higher than current goals
+                if target_line > current_goals:
+                    selected_odds = over_odds
+                    prediction = f"TOTAL OVER {target_line}"
+            # Fallback check: if line is already at current goals, check if +0.5 line is available
+        elif direction == "UNDER":
+            if under_odds and under_odds >= MIN_ODDS and under_odds <= MAX_ODDS:
+                if target_line >= current_goals:
+                    selected_odds = under_odds
+                    prediction = f"TOTAL UNDER {target_line}"
+
+        if not selected_odds:
+            logger.info(f"Match {match_id} odds {over_odds}/{under_odds} on line {target_line} did not meet criteria.")
+            return None
+
+        pick = candidate.copy()
+        pick.update({
+            "prediction": prediction,
+            "target_line": target_line,
+            "odds": selected_odds,
+            "timestamp": int(time.time())
+        })
+        return pick
+
+    def find_best_pick(self, live_games: list) -> dict:
+        """
+        Scans all live games, evaluates edge score, sorts by score,
+        and retrieves live odds for the highest ranking candidate.
+        """
+        candidates = []
+        for match in live_games:
+            evaluated = self.evaluate_live_match(match)
+            if evaluated:
+                candidates.append(evaluated)
+
+        if not candidates:
+            logger.info(f"Scanned {len(live_games)} games; 0 met live statistical criteria.")
+            return None
+
+        # Sort candidates: Winning/Priority leagues first, then descending by edge score
+        candidates.sort(key=lambda x: (1 if x.get("is_priority_league") else 0, x["edge_score"]), reverse=True)
+        top_cand = candidates[0]
+        p_badge = f" [⭐ HIGH PRIORITY LEAGUE ({top_cand.get('league_wins')}W)]" if top_cand.get("is_priority_league") else ""
+        logger.info(f"Found {len(candidates)} qualifying candidates. Top pick: {top_cand['edge_score']}%{p_badge}")
+
+        # Check odds for the top candidate
+        for top_candidate in candidates[:3]:
+            verified = self.fetch_verified_odds(top_candidate)
+            if verified:
+                return verified
+
+        logger.info("Top candidates did not have qualifying live odds.")
+        return None

@@ -1,0 +1,13 @@
+{
+    "banned": {
+        "193": {
+            "id": "193",
+            "name": "Lithuania A Lyga",
+            "losses": 1,
+            "first_loss_time": 1789321300,
+            "last_match": "Suduva Marijampole vs FK Zalgiris Vilnius",
+            "last_loss_time": 1789321300
+        }
+    },
+    "priority": {}
+}
