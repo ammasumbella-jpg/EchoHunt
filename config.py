@@ -1,10 +1,8 @@
-"""
-Configuration for the Inforadar Telegram Prediction Bot
-"""
+import os
 
 # Telegram Bot Credentials
-TELEGRAM_BOT_TOKEN = "8685338236:AAG4otaReOuHCjQo-C1St3WX9qZ7uX0uxe4"
-TELEGRAM_CHAT_ID = "7200809630"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8685338236:AAG4otaReOuHCjQo-C1St3WX9qZ7uX0uxe4")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7200809630")
 
 # Inforadar API Settings
 API_BASE_URL = "https://inforadar.live/api/v1"
