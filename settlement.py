@@ -150,12 +150,43 @@ class SettlementEngine:
         game_data = self.api_client.get_game_view(match_id)
         if not game_data:
             logger.warning(f"Could not fetch game view for active match {match_id}")
+
+            # --- API-down force-settle ---
+            # If API has been broken for > FORCE_SETTLE_AFTER_MINUTES, use the
+            # last successfully fetched score rather than waiting forever.
+            pick_ts = state.get("pick_timestamp")
+            if pick_ts:
+                elapsed_min = (time.time() - pick_ts) / 60
+                last_score = state.get("last_known_score")
+                last_goals = state.get("last_known_goals", 0)
+                if elapsed_min >= FORCE_SETTLE_AFTER_MINUTES and last_score is not None:
+                    direction = state.get("direction")
+                    target_line = state.get("target_line")
+                    res, note = evaluate_strict_total_outcome(direction, target_line, last_goals)
+                    logger.warning(
+                        f"FORCE SETTLE (API DOWN) triggered: elapsed={elapsed_min:.0f} min, "
+                        f"last known score={last_score}"
+                    )
+                    return self._record_outcome(state, {
+                        "is_settled": True,
+                        "result": res,
+                        "final_score": last_score,
+                        "note": (
+                            f"Force-settled after {elapsed_min:.0f} min of API failure. "
+                            f"Last known score: {last_score}. {note}"
+                        )
+                    })
+
             return {"is_settled": False}
 
         time_status = str(game_data.get("timeStatus", ""))
         scores = game_data.get("scores", "0-0")
         h_score, a_score, total_goals = parse_score(scores)
         match_minute = (game_data.get("time") or {}).get("tm")
+
+        # Persist the last successfully fetched score to state for API-down fallback
+        if state.get("_state_mgr"):
+            state["_state_mgr"].update_last_known_score(scores, total_goals)
 
         # Calculate elapsed minutes for logging
         pick_ts = state.get("pick_timestamp")

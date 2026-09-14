@@ -25,6 +25,8 @@ DEFAULT_STATE = {
     "minute_at_pick": None,
     "edge_score": None,
     "pick_timestamp": None,
+    "last_known_score": None,   # updated on every successful API poll
+    "last_known_goals": 0,
     "history_match_ids": []
 }
 
@@ -91,6 +93,12 @@ class StateManager:
         self.state["history_match_ids"] = history
         self.save_state()
         logger.info("Bot UNLOCKED. Scanning for new opportunities.")
+
+    def update_last_known_score(self, score: str, goals: int):
+        """Update the last successfully fetched score, used as fallback for API-down force-settle."""
+        self.state["last_known_score"] = score
+        self.state["last_known_goals"] = goals
+        self.save_state()
 
     def is_match_already_picked(self, match_id: str) -> bool:
         """Check if a match has already been picked before to prevent duplicate bets on the same game."""

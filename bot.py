@@ -57,7 +57,20 @@ def run_bot():
                 pick_name = state_mgr.state.get("prediction")
                 logger.info(f"Bot is currently LOCKED on match {active_id} ({pick_name}). Monitoring for settlement...")
                 
-                settlement = settlement_engine.check_match_settlement(state_mgr.state)
+                # Inject state_mgr reference so settlement can persist last known score
+                active_state = dict(state_mgr.state)
+                active_state["_state_mgr"] = state_mgr
+
+                # Seed last_known_score from score_at_pick if never set yet
+                if active_state.get("last_known_score") is None and active_state.get("score_at_pick"):
+                    state_mgr.update_last_known_score(
+                        active_state["score_at_pick"],
+                        active_state.get("goals_at_pick", 0)
+                    )
+                    active_state["last_known_score"] = active_state["score_at_pick"]
+                    active_state["last_known_goals"] = active_state.get("goals_at_pick", 0)
+
+                settlement = settlement_engine.check_match_settlement(active_state)
                 if settlement.get("is_settled"):
                     result = settlement["result"]
                     final_score = settlement["final_score"]
