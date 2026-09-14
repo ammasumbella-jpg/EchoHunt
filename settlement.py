@@ -74,6 +74,40 @@ class SettlementEngine:
                     self.league_mgr.record_loss(league_id, league_name, direction, match_desc)
         return outcome
 
+    def _detect_shootout_score(self, game: dict, state: dict) -> str | None:
+        """
+        Detect if a penalty shootout occurred and inflated the 'scores' string.
+        Returns the actual in-game (90'/120') score if detected, else None.
+        Shootout goals are lumped into 'scores' by the API, but bookmakers do not count them.
+        """
+        scores = game.get("scores") or ""
+        _, _, total = parse_score(scores)
+        stats = game.get("stats") or {}
+        goals_stat = stats.get("goals")
+        if not goals_stat or len(goals_stat) < 2:
+            return None
+
+        try:
+            st_home = int(goals_stat[0])
+            st_away = int(goals_stat[1])
+            st_total = st_home + st_away
+            st_score = f"{st_home}-{st_away}"
+        except (ValueError, TypeError, IndexError):
+            return None
+
+        # Shootout goals cause a massive jump in total goals (>= 2)
+        if total - st_total >= 2:
+            events = game.get("events") or []
+            event_goals = len([e for e in events if e.get("type") == "goal"])
+            prev_score = state.get("_last_score") or state.get("score_at_pick")
+            _, _, prev_total = parse_score(prev_score) if prev_score else (0, 0, None)
+
+            # Highly reliable if stats matches events timeline or last polled score
+            if event_goals == st_total or (prev_total is not None and prev_total == st_total):
+                logger.info(f"Penalty shootout detected! Settling on regular score {st_score}, not shootout final {scores}")
+                return st_score
+        return None
+
     def _check_force_settle(self, state: dict, scores: str, total_goals: int,
                              time_status: str, match_minute) -> dict | None:
         """
@@ -87,6 +121,16 @@ class SettlementEngine:
         """
         direction = state.get("direction")
         target_line = state.get("target_line")
+
+        # If Extra Time normal-time score was locked, settle on that
+        nt_score = state.get("score_at_normal_time_end")
+        score_adj_note = ""
+        if nt_score:
+            _, _, nt_total = parse_score(nt_score)
+            if nt_total is not None:
+                scores = nt_score
+                total_goals = nt_total
+                score_adj_note = f" (Settled on 90' score {nt_score}, excluding ET)"
 
         # --- Trigger 1: Elapsed time timeout ---
         pick_ts = state.get("pick_timestamp")
@@ -104,7 +148,7 @@ class SettlementEngine:
                 "is_settled": True,
                 "result": res,
                 "final_score": scores,
-                "note": f"Force-settled after {elapsed_min:.0f} min (API stuck at timeStatus={time_status}). {note}"
+                "note": f"Force-settled after {elapsed_min:.0f} min (API stuck at timeStatus={time_status}).{score_adj_note} {note}"
             })
 
         # --- Trigger 2: API returns timeStatus=2 at minute > 90 ---
@@ -125,7 +169,7 @@ class SettlementEngine:
                     "is_settled": True,
                     "result": res,
                     "final_score": scores,
-                    "note": f"Force-settled: API returned timeStatus=2 at minute {minute_int} (likely FT). {note}"
+                    "note": f"Force-settled: API returned timeStatus=2 at minute {minute_int} (likely FT).{score_adj_note} {note}"
                 })
 
         return None  # Not yet triggered
@@ -200,6 +244,46 @@ class SettlementEngine:
         if state.get("_state_mgr"):
             state["_state_mgr"].update_last_known_score(scores, total_goals)
 
+        # --- Extra-Time Clock Tracking (Spysheet Clock Dip Pattern) ---
+        minute_val = None
+        try:
+            minute_val = int(match_minute) if match_minute is not None else None
+        except (ValueError, TypeError):
+            minute_val = None
+
+        if minute_val is not None and time_status in ["1", "2"]:
+            prev_minute = state.get("_last_minute")
+            prev_score = state.get("_last_score")
+
+            # 1. Detect clock dip: clock went backwards from >90' down to <=90' (Extra Time kickoff)
+            if (prev_minute is not None and prev_minute > 90
+                    and minute_val <= 90
+                    and not state.get("score_at_normal_time_end")
+                    and not state.get("_candidate_nt_score")
+                    and prev_score is not None):
+                state["_candidate_nt_score"] = prev_score
+                logger.info(f"Clock dip detected (>90m -> {minute_val}m): candidate normal-time score saved as {prev_score}")
+                if state.get("_state_mgr"):
+                    state["_state_mgr"].update_extra_time_state(
+                        minute_val, scores, candidate_nt=prev_score
+                    )
+
+            # 2. Confirm Extra Time: clock climbs past 95' with candidate score saved
+            if (minute_val >= 95 and state.get("_candidate_nt_score")
+                    and not state.get("score_at_normal_time_end")):
+                candidate = state["_candidate_nt_score"]
+                state["score_at_normal_time_end"] = candidate
+                logger.info(f"Extra Time confirmed at {minute_val}m! Normal-time (90') score locked at {candidate}")
+                if state.get("_state_mgr"):
+                    state["_state_mgr"].update_extra_time_state(
+                        minute_val, scores, score_at_nt=candidate
+                    )
+
+            state["_last_minute"] = minute_val
+            state["_last_score"] = scores
+            if state.get("_state_mgr"):
+                state["_state_mgr"].update_extra_time_state(minute_val, scores)
+
         # Calculate elapsed minutes for logging
         pick_ts = state.get("pick_timestamp")
         elapsed_str = ""
@@ -207,33 +291,57 @@ class SettlementEngine:
             elapsed_min = (time.time() - pick_ts) / 60
             elapsed_str = f", elapsed={elapsed_min:.0f}m"
 
+        nt_locked = state.get("score_at_normal_time_end")
+        nt_badge = f", NT_locked={nt_locked}" if nt_locked else ""
         logger.info(
             f"Checking locked match {match_id}: score={scores} (Total: {total_goals}), "
-            f"line={target_line}, timeStatus={time_status}, minute={match_minute}{elapsed_str}"
+            f"line={target_line}, timeStatus={time_status}, minute={match_minute}{elapsed_str}{nt_badge}"
         )
+
+        # --- Determine Effective Settlement Score (Extra Time & Shootout Filtering) ---
+        so_score = self._detect_shootout_score(game_data, state)
+        settle_score = scores
+        settle_goals = total_goals
+        score_adj_note = ""
+
+        if nt_locked:
+            _, _, nt_total = parse_score(nt_locked)
+            if nt_total is not None:
+                settle_score = nt_locked
+                settle_goals = nt_total
+                score_adj_note = f" (Settled on 90' normal-time score {nt_locked}, excluding ET goals)"
+                logger.info(f"Extra Time active: settling on normal-time score {nt_locked} (total {nt_total}), not ET final {scores}")
+        elif so_score:
+            _, _, so_total = parse_score(so_score)
+            if so_total is not None:
+                settle_score = so_score
+                settle_goals = so_total
+                score_adj_note = f" (Settled on in-play score {so_score}, excluding shootout goals)"
+                logger.info(f"Penalty Shootout active: settling on in-game score {so_score} (total {so_total}), not shootout final {scores}")
 
         # -----------------
         # OVER Settlement
         # -----------------
         if direction == "OVER":
-            # Early Full Win: goals exceed line by >= 0.5 → mathematically guaranteed
-            diff = round(total_goals - target_line, 2)
+            # Early Full Win: regular time goals exceed line by >= 0.5 → mathematically guaranteed
+            # (Only allowed if NOT in Extra Time; ET goals do not count for standard 90-min bets)
+            diff = round(settle_goals - target_line, 2)
             if diff >= 0.5:
                 return self._record_outcome(state, {
                     "is_settled": True,
                     "result": "WON",
-                    "final_score": scores,
-                    "note": f"Full Win confirmed! Total goals: {total_goals} >= Line {target_line} + 0.5"
+                    "final_score": settle_score,
+                    "note": f"Full Win confirmed! Total goals: {settle_goals} >= Line {target_line} + 0.5{score_adj_note}"
                 })
 
             # Normal finish (timeStatus=3)
             if time_status == "3":
-                res, note = evaluate_strict_total_outcome(direction, target_line, total_goals)
+                res, note = evaluate_strict_total_outcome(direction, target_line, settle_goals)
                 return self._record_outcome(state, {
                     "is_settled": True,
                     "result": res,
-                    "final_score": scores,
-                    "note": f"Match finished. {note}"
+                    "final_score": settle_score,
+                    "note": f"Match finished.{score_adj_note} {note}"
                 })
 
         # -----------------
@@ -241,23 +349,23 @@ class SettlementEngine:
         # -----------------
         elif direction == "UNDER":
             # Early Full Loss: goals already exceed line by >= 0.5
-            diff = round(target_line - total_goals, 2)
+            diff = round(target_line - settle_goals, 2)
             if diff <= -0.5:
                 return self._record_outcome(state, {
                     "is_settled": True,
                     "result": "LOST",
-                    "final_score": scores,
-                    "note": f"Full Loss confirmed. Total goals: {total_goals} exceeded line {target_line}"
+                    "final_score": settle_score,
+                    "note": f"Full Loss confirmed. Total goals: {settle_goals} exceeded line {target_line}{score_adj_note}"
                 })
 
             # Normal finish (timeStatus=3)
             if time_status == "3":
-                res, note = evaluate_strict_total_outcome(direction, target_line, total_goals)
+                res, note = evaluate_strict_total_outcome(direction, target_line, settle_goals)
                 return self._record_outcome(state, {
                     "is_settled": True,
                     "result": res,
-                    "final_score": scores,
-                    "note": f"Match finished. {note}"
+                    "final_score": settle_score,
+                    "note": f"Match finished.{score_adj_note} {note}"
                 })
 
         # Cancelled, Postponed or Abandoned

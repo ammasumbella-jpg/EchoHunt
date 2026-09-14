@@ -27,6 +27,10 @@ DEFAULT_STATE = {
     "pick_timestamp": None,
     "last_known_score": None,   # updated on every successful API poll
     "last_known_goals": 0,
+    "_last_minute": None,       # tracks minute dips for extra time detection
+    "_last_score": None,
+    "_candidate_nt_score": None,
+    "score_at_normal_time_end": None,  # locked 90-minute normal-time score
     "history_match_ids": []
 }
 
@@ -98,6 +102,18 @@ class StateManager:
         """Update the last successfully fetched score, used as fallback for API-down force-settle."""
         self.state["last_known_score"] = score
         self.state["last_known_goals"] = goals
+        self.save_state()
+
+    def update_extra_time_state(self, minute: int = None, score: str = None, candidate_nt: str = None, score_at_nt: str = None):
+        """Track clock dips and lock 90-minute normal-time score for Extra Time controller."""
+        if minute is not None:
+            self.state["_last_minute"] = minute
+        if score is not None:
+            self.state["_last_score"] = score
+        if candidate_nt is not None:
+            self.state["_candidate_nt_score"] = candidate_nt
+        if score_at_nt is not None:
+            self.state["score_at_normal_time_end"] = score_at_nt
         self.save_state()
 
     def is_match_already_picked(self, match_id: str) -> bool:
