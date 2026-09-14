@@ -149,7 +149,19 @@ class SettlementEngine:
 
         game_data = self.api_client.get_game_view(match_id)
         if not game_data:
-            logger.warning(f"Could not fetch game view for active match {match_id}")
+            logger.warning(f"Could not fetch game view for active match {match_id}. Checking finished_games archive...")
+            try:
+                finished_list = self.api_client.get_finished_games(sport_id=1, per_page=50)
+                for fg in finished_list:
+                    if str(fg.get("id")) == str(match_id):
+                        logger.info(f"Match {match_id} found in finished_games archive! Score: {fg.get('scores')}")
+                        game_data = fg
+                        break
+            except Exception as fe:
+                logger.warning(f"Error querying finished_games fallback for {match_id}: {fe}")
+
+        if not game_data:
+            logger.warning(f"Match {match_id} not available in game_view or finished_games archive.")
 
             # --- API-down force-settle ---
             # If API has been broken for > FORCE_SETTLE_AFTER_MINUTES, use the

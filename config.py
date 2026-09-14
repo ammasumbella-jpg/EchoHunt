@@ -6,12 +6,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7200809630")
 
 # Inforadar API Settings
 API_BASE_URL = "https://inforadar.live/api/v1"
-API_TIMEOUT = 25  # seconds
+API_TIMEOUT = 25.0  # seconds
+API_MIN_INTERVAL = 0.6  # polite throttle interval between requests
+MAX_ODDS_LOOKUPS = 10  # cap odds lookups per scan to avoid rate limits/blocks
 REQUEST_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+    "Accept": "application/json",
+    "Referer": "https://inforadar.live/",
 }
 
 # Bot Operational Settings

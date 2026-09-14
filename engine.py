@@ -2,11 +2,26 @@
 Prediction & Analytics Engine for Inforadar live data.
 Calculates Edge Scores and selects the optimal Total Over/Under opportunity.
 """
+import re
 import time
 import logging
-from config import MIN_MATCH_MINUTE, MAX_MATCH_MINUTE, MIN_EDGE_SCORE, MIN_ODDS, MAX_ODDS
+from config import (
+    MIN_MATCH_MINUTE,
+    MAX_MATCH_MINUTE,
+    MIN_EDGE_SCORE,
+    MIN_ODDS,
+    MAX_ODDS,
+    MAX_ODDS_LOOKUPS,
+)
 
 logger = logging.getLogger("engine")
+
+# Regex to filter simulated / esports football with fake clocks & inflated scoring
+SIMULATED = re.compile(
+    r"esoccer|e-soccer|e\s?football|efootball|cyber|volta|fifa|pes\b|"
+    r"battle|\bsim(ulated)?\b|liga\s?pro|\b(8|10|12)\s?min",
+    re.I,
+)
 
 def parse_stat_pair(stat_val) -> tuple:
     """Safely parse [home, away] from API stats."""
@@ -40,6 +55,10 @@ class PredictionEngine:
         """
         league_id = str(match.get("league", {}).get("id", ""))
         league_name = match.get("league", {}).get("name", "")
+
+        # Reject simulated esports matches (FIFA, cyber, 8/10/12 min)
+        if SIMULATED.search(league_name or ""):
+            return None
 
         time_info = match.get("time") or {}
         minute = time_info.get("tm")
@@ -261,11 +280,12 @@ class PredictionEngine:
             mod_badge = f" [League bias: OVER {over_mod:+d} / UNDER {under_mod:+d}]"
         logger.info(f"Found {len(candidates)} qualifying candidates. Top pick: {top_cand['edge_score']}%{mod_badge}")
 
-        # Check odds for the top candidate
-        for top_candidate in candidates[:3]:
+        # Check odds for the top candidates, bounded by MAX_ODDS_LOOKUPS
+        odds_check_limit = min(len(candidates), MAX_ODDS_LOOKUPS)
+        for top_candidate in candidates[:odds_check_limit]:
             verified = self.fetch_verified_odds(top_candidate)
             if verified:
                 return verified
 
-        logger.info("Top candidates did not have qualifying live odds.")
+        logger.info(f"Checked top {odds_check_limit} candidates; none had qualifying live odds.")
         return None
