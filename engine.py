@@ -152,15 +152,35 @@ class PredictionEngine:
                     f"League '{league_name}' modifiers: OVER {dir_mods['over']:+d} / UNDER {dir_mods['under']:+d}"
                 )
 
-        # Decide primary direction
+        # Decide raw statistical direction
+        raw_direction = None
+        raw_edge_score = 0
         if over_score >= under_score and over_score >= MIN_EDGE_SCORE:
-            direction = "OVER"
-            edge_score = min(99, over_score)
+            raw_direction = "OVER"
+            raw_edge_score = min(99, over_score)
         elif under_score > over_score and under_score >= MIN_EDGE_SCORE:
-            direction = "UNDER"
-            edge_score = min(99, under_score)
+            raw_direction = "UNDER"
+            raw_edge_score = min(99, under_score)
         else:
             return None
+
+        # Check for league contrarian inversion:
+        # If this league has net losses in raw_direction, invert it!
+        direction = raw_direction
+        edge_score = raw_edge_score
+        was_inverted = False
+        inversion_reason = ""
+
+        if self.league_mgr:
+            is_inv, new_dir, reason = self.league_mgr.check_direction_inversion(league_id, raw_direction)
+            if is_inv:
+                direction = new_dir
+                was_inverted = True
+                inversion_reason = reason
+                logger.info(
+                    f"Contrarian Flip for league '{league_name}': "
+                    f"Model suggested {raw_direction} ({raw_edge_score}%) -> Flipped to {direction}! {reason}"
+                )
 
         # Fetch league summary for display in alerts
         league_summary = None
@@ -170,6 +190,9 @@ class PredictionEngine:
         return {
             "match": match,
             "direction": direction,
+            "raw_direction": raw_direction,
+            "was_inverted": was_inverted,
+            "inversion_reason": inversion_reason,
             "edge_score": edge_score,
             "over_mod": dir_mods["over"],
             "under_mod": dir_mods["under"],
@@ -210,40 +233,39 @@ class PredictionEngine:
             logger.info(f"Total market not found or empty for match {match_id}")
             return None
 
-        # Look at the most recent live odds row
-        latest_tick = total_market["odds"][0]
-        # row1 = Over, row2 = Line, row3 = Under
-        row_names = total_market.get("rowsNames", ["Over", "Total", "Under"])
-        
-        try:
-            line_val = float(latest_tick.get("row2"))
-            over_val = latest_tick.get("row1")
-            under_val = latest_tick.get("row3")
-
-            over_odds = float(over_val) if over_val is not None else None
-            under_odds = float(under_val) if under_val is not None else None
-        except (TypeError, ValueError) as e:
-            logger.warning(f"Failed to parse odds row: {latest_tick} ({e})")
-            return None
-
         selected_odds = None
-        target_line = line_val
+        target_line = None
+        prediction = None
 
-        if direction == "OVER":
-            if over_odds and over_odds >= MIN_ODDS and over_odds <= MAX_ODDS:
-                # Must be higher than current goals
-                if target_line > current_goals:
-                    selected_odds = over_odds
-                    prediction = f"TOTAL OVER {target_line}"
-            # Fallback check: if line is already at current goals, check if +0.5 line is available
-        elif direction == "UNDER":
-            if under_odds and under_odds >= MIN_ODDS and under_odds <= MAX_ODDS:
-                if target_line >= current_goals:
-                    selected_odds = under_odds
-                    prediction = f"TOTAL UNDER {target_line}"
+        # Check recent live odds rows to find an active qualifying line
+        for tick in total_market["odds"][:5]:
+            try:
+                line_val = float(tick.get("row2"))
+                over_val = tick.get("row1")
+                under_val = tick.get("row3")
+
+                over_odds = float(over_val) if over_val is not None else None
+                under_odds = float(under_val) if under_val is not None else None
+            except (TypeError, ValueError):
+                continue
+
+            if direction == "OVER":
+                if over_odds and MIN_ODDS <= over_odds <= MAX_ODDS:
+                    if line_val > current_goals:
+                        selected_odds = over_odds
+                        target_line = line_val
+                        prediction = f"TOTAL OVER {line_val:g}"
+                        break
+            elif direction == "UNDER":
+                if under_odds and MIN_ODDS <= under_odds <= MAX_ODDS:
+                    if line_val >= current_goals:
+                        selected_odds = under_odds
+                        target_line = line_val
+                        prediction = f"TOTAL UNDER {line_val:g}"
+                        break
 
         if not selected_odds:
-            logger.info(f"Match {match_id} odds {over_odds}/{under_odds} on line {target_line} did not meet criteria.")
+            logger.info(f"Match {match_id} ({direction}) did not have qualifying live odds on total market.")
             return None
 
         pick = candidate.copy()

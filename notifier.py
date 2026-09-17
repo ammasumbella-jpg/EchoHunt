@@ -95,11 +95,21 @@ class TelegramNotifier:
                     f"{'✅ Favoured' if under_mod > 0 else ('⚠️ Caution' if under_mod < 0 else '')}\n"
                 )
 
+        inversion_tag = ""
+        if pick.get("was_inverted"):
+            raw_dir = pick.get("raw_direction", "")
+            inversion_tag = (
+                f"🔄 <b>CONTRARIAN FLIP APPLIED:</b>\n"
+                f"• Model suggested <code>{raw_dir}</code>, but this league historically loses {raw_dir}.\n"
+                f"• Recommendation flipped to <b>{direction}</b> based on empirical league track record!\n"
+            )
+
         msg = (
             f"🎯 <b>RADAR LIVE PICK DETECTED</b> 🎯\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🏆 <b>League:</b> {league}\n"
             f"{league_bias_tag}"
+            f"{inversion_tag}"
             f"⚔️ <b>Match:</b> <b>{home}</b> vs <b>{away}</b>\n"
             f"{event_link}"
             f"⏱ <b>In-Play:</b> <code>{minute}'</code> | <b>Current Score:</b> <code>{score}</code>\n"

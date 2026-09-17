@@ -133,6 +133,44 @@ class LeagueManager:
             "under": calc(entry["under"]),
         }
 
+    def check_direction_inversion(self, league_id: str, raw_direction: str) -> tuple[bool, str, str]:
+        """
+        Inversion rule:
+        If a league has net losses on OVER (losses > wins):
+            When model suggests OVER -> flip to UNDER!
+        If a league has net losses on UNDER (losses > wins):
+            When model suggests UNDER -> flip to OVER!
+
+        Returns:
+            (is_inverted: bool, final_direction: str, reason: str)
+        """
+        lid = str(league_id)
+        if lid not in self._perf["leagues"]:
+            return False, raw_direction, ""
+
+        entry = self._perf["leagues"][lid]
+        over_rec = entry.get("over", {"wins": 0, "losses": 0})
+        under_rec = entry.get("under", {"wins": 0, "losses": 0})
+
+        if raw_direction == "OVER":
+            if over_rec["losses"] > over_rec["wins"]:
+                diff = over_rec["losses"] - over_rec["wins"]
+                return (
+                    True,
+                    "UNDER",
+                    f"League OVER record is {over_rec['wins']}W-{over_rec['losses']}L (-{diff} net). Flipped to UNDER!"
+                )
+        elif raw_direction == "UNDER":
+            if under_rec["losses"] > under_rec["wins"]:
+                diff = under_rec["losses"] - under_rec["wins"]
+                return (
+                    True,
+                    "OVER",
+                    f"League UNDER record is {under_rec['wins']}W-{under_rec['losses']}L (-{diff} net). Flipped to OVER!"
+                )
+
+        return False, raw_direction, ""
+
     def get_league_summary(self, league_id: str) -> dict | None:
         """Return the full record entry for a league, or None if unknown."""
         return self._perf["leagues"].get(str(league_id))
