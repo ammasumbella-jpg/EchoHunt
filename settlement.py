@@ -56,8 +56,8 @@ class SettlementEngine:
             result = outcome.get("result")
             direction = state.get("direction", "OVER")  # "OVER" or "UNDER"
 
-            # Update streak records
-            if self.streak_tracker and result in ["WON", "LOST"]:
+            # Update streak records (WON, LOST, VOID, PUSH are all handled appropriately)
+            if self.streak_tracker and result in ["WON", "LOST", "VOID", "PUSH"]:
                 outcome["streak_summary"] = self.streak_tracker.record_bet_result(result)
 
             # Update per-league, per-direction performance records

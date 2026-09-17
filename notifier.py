@@ -144,6 +144,9 @@ class TelegramNotifier:
         if result == "WON":
             header = "✅ <b>BET SETTLED: WON!</b> 🚀🎉"
             status_text = f"<b>Profit:</b> +{(odds - 1.0):.2f} Units @ @{odds:.2f}"
+        elif result in ["VOID", "PUSH"]:
+            header = f"🔄 <b>BET SETTLED: {result} (REFUNDED)</b> 🔄"
+            status_text = "<b>Result:</b> 0.00 Units (Stake Refunded / No Action)"
         else:
             header = "❌ <b>BET SETTLED: MISSED</b> ⚠️"
             status_text = f"<b>Result:</b> -1.00 Unit"
@@ -156,6 +159,12 @@ class TelegramNotifier:
                 f"📈 <b>LEAGUE {direction} RECORD UPDATED:</b>\n"
                 f"• <code>{league}</code> — {direction} Win recorded ✅\n"
                 f"<i>(Positive bias applied to future {direction} picks from this league)</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+        elif result in ["VOID", "PUSH"]:
+            league_notice = (
+                f"🔄 <b>LEAGUE {direction} RECORD UNCHANGED:</b>\n"
+                f"• <code>{league}</code> — {result} recorded (Stake refunded, no win/loss impact)\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
         elif result == "LOST":
@@ -175,16 +184,18 @@ class TelegramNotifier:
             w_loss = streak_summary.get("worst_loss_streak", 0)
             tot_w = streak_summary.get("total_wins", 0)
             tot_l = streak_summary.get("total_losses", 0)
+            tot_v = streak_summary.get("total_voids", 0)
             wr = streak_summary.get("win_rate", 0.0)
 
             curr_streak_badge = f"🔥 {c_win} Wins in a row" if c_win > 0 else (f"⚠️ {c_loss} Losses in a row" if c_loss > 0 else "0")
+            void_badge = f" | {tot_v} Pushes/Voids" if tot_v > 0 else ""
 
             streak_block = (
                 f"📈 <b>PERFORMANCE & STREAKS</b>\n"
                 f"• <b>Current Streak:</b> <code>{curr_streak_badge}</code>\n"
                 f"• <b>Best Win Streak:</b> <code>🏆 {b_win} Wins</code>\n"
                 f"• <b>Worst Loss Streak:</b> <code>🛑 {w_loss} Losses</code>\n"
-                f"• <b>All-Time Record:</b> <code>{tot_w}W - {tot_l}L ({wr}%)</code>\n"
+                f"• <b>All-Time Record:</b> <code>{tot_w}W - {tot_l}L{void_badge} ({wr}%)</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 

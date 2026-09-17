@@ -18,11 +18,12 @@ DEFAULT_STREAKS = {
     "total_bets": 0,
     "total_wins": 0,
     "total_losses": 0,
+    "total_voids": 0,
     "current_win_streak": 0,
     "best_win_streak": 0,
     "current_loss_streak": 0,
     "worst_loss_streak": 0,
-    "history": []  # e.g. ['W', 'W', 'L']
+    "history": []  # e.g. ['W', 'W', 'L', 'P']
 }
 
 class StreakTracker:
@@ -51,9 +52,25 @@ class StreakTracker:
 
     def record_bet_result(self, result: str) -> dict:
         """
-        Record 'WON' or 'LOST' and update all streak metrics.
+        Record 'WON', 'LOST', 'VOID', or 'PUSH' and update streak metrics.
+
+        Per betting rules: PUSH and VOID are stake refunds (no money won or lost).
+        They do NOT count as a loss and do NOT break or affect the current win/loss streak.
         """
-        self.stats["total_bets"] += 1
+        if result in ["VOID", "PUSH"]:
+            self.stats["total_voids"] = self.stats.get("total_voids", 0) + 1
+            self.stats["history"].append("P")
+            if len(self.stats["history"]) > 20:
+                self.stats["history"] = self.stats["history"][-20:]
+            self.save_stats()
+            logger.info(
+                f"Bet Settled as {result} (Stake Refunded). Streak preserved: "
+                f"Win Streak={self.stats['current_win_streak']} | "
+                f"Loss Streak={self.stats['current_loss_streak']}"
+            )
+            return self.get_summary()
+
+        self.stats["total_bets"] = self.stats.get("total_bets", 0) + 1
 
         if result == "WON":
             self.stats["total_wins"] += 1
@@ -85,8 +102,9 @@ class StreakTracker:
     def get_summary(self) -> dict:
         wins = self.stats["total_wins"]
         losses = self.stats["total_losses"]
-        total = wins + losses
-        win_rate = (wins / total * 100) if total > 0 else 0.0
+        voids = self.stats.get("total_voids", 0)
+        total_decided = wins + losses
+        win_rate = (wins / total_decided * 100) if total_decided > 0 else 0.0
 
         return {
             "current_win_streak": self.stats["current_win_streak"],
@@ -95,7 +113,8 @@ class StreakTracker:
             "worst_loss_streak": self.stats["worst_loss_streak"],
             "total_wins": wins,
             "total_losses": losses,
-            "total_bets": total,
+            "total_voids": voids,
+            "total_bets": total_decided + voids,
             "win_rate": round(win_rate, 1),
             "recent_form": "".join(self.stats["history"][-5:])
         }
