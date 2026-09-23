@@ -25,3 +25,13 @@ MAX_MATCH_MINUTE = 80       # Don't pick too late to allow time for settlement
 MIN_EDGE_SCORE = 65         # Minimum edge score required to trigger a pick
 MIN_ODDS = 1.40             # Minimum acceptable decimal odds
 MAX_ODDS = 3.50             # Maximum realistic decimal odds
+MAX_GOALS_AT_PICK = 2       # Skip OVER picks when 3+ goals already in game (41% WR vs 49% at 0-1)
+
+# Leagues with 0% historical win rate — automatically excluded from all picks
+# (Derived from 207-bet real performance analysis)
+BLACKLISTED_LEAGUES = [
+    "Israel Liga Bet North",
+    "Romania Liga 2",
+    "Serbia U19 League",
+    "Peru Campeonato Nacional Women",
+]

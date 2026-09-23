@@ -12,6 +12,8 @@ from config import (
     MIN_ODDS,
     MAX_ODDS,
     MAX_ODDS_LOOKUPS,
+    MAX_GOALS_AT_PICK,
+    BLACKLISTED_LEAGUES,
 )
 
 logger = logging.getLogger("engine")
@@ -60,6 +62,11 @@ class PredictionEngine:
         if SIMULATED.search(league_name or ""):
             return None
 
+        # FIX #8: Reject blacklisted leagues (0% historical win rate)
+        if league_name in BLACKLISTED_LEAGUES:
+            logger.debug(f"Skipping blacklisted league: {league_name}")
+            return None
+
         time_info = match.get("time") or {}
         minute = time_info.get("tm")
         time_status = match.get("timeStatus")
@@ -76,6 +83,11 @@ class PredictionEngine:
         if minute < MIN_MATCH_MINUTE or minute > MAX_MATCH_MINUTE:
             return None
 
+        # FIX #6: Block the 70-75' trap window (only 31% WR from real data)
+        if 70 <= minute <= 75:
+            logger.debug(f"Skipping match at {minute}' — 70-75' trap window (31% historical WR)")
+            return None
+
         stats = match.get("stats") or {}
         sot_h, sot_a = parse_stat_pair(stats.get("on_target"))
         da_h, da_a = parse_stat_pair(stats.get("dangerous_attacks"))
@@ -89,29 +101,34 @@ class PredictionEngine:
         goal_diff = abs(h_goals - a_goals)
 
         # -----------------
-        # OVER Calculation (Statistical Edge backed by historical data)
+        # OVER Calculation (Fully revised from 207-bet real history)
         # -----------------
         over_score = 0
 
-        # Shots on Target is the #1 correlated factor (+21% Over rate)
+        # FIX #1: SoT scoring revised — only SoT >= 11 is a strong win signal (55% WR)
+        # SoT 8-10 was 38% WR (weak — reduce); SoT 6-7 was 45% WR (keep)
         if sot_total >= 11:
-            over_score += 45
+            over_score += 50   # Best predictor: 55% WR historically
         elif sot_total >= 8:
-            over_score += 35
+            over_score += 20   # Weak (38% WR) — reduced from old 35
         elif sot_total >= 6:
-            over_score += 25
+            over_score += 25   # Decent (45% WR)
         elif sot_total >= 4:
-            over_score += 15
-
-        # Dangerous Attacks intensity
-        if da_total >= 110:
-            over_score += 25
-        elif da_total >= 80:
-            over_score += 18
-        elif da_total >= 55:
             over_score += 10
 
-        # Corners pressure
+        # FIX #2: DA weights REVERSED from original
+        # Old logic boosted high DA — real data shows HIGH DA predicts LOSSES:
+        #   DA 0-55:  70% WR | DA 55-80: 54% WR | DA 80-110: 37% WR | DA 110+: 35% WR
+        if da_total <= 55:
+            over_score += 20   # Low DA = efficient scoring game (70% WR)
+        elif da_total <= 80:
+            over_score += 5    # Moderate DA, small boost (54% WR)
+        elif da_total <= 110:
+            over_score -= 10   # High DA = teams attack but don't convert (37% WR)
+        else:
+            over_score -= 20   # Very high DA = biggest loss predictor (35% WR)
+
+        # Corners pressure (unchanged)
         if corn_total >= 8:
             over_score += 10
 
@@ -119,53 +136,45 @@ class PredictionEngine:
         if goal_diff <= 1:
             over_score += 15
 
-        # Prime 2nd half acceleration window
-        if 55 <= minute <= 78:
-            over_score += 10
+        # Minute windows revised: 45-55' and 75-80' are good; 70-75' is blocked above
+        if 45 <= minute <= 55:
+            over_score += 10   # Early 2nd half momentum (52% WR)
+        elif 75 <= minute <= 80:
+            over_score += 10   # Late push window (55% WR)
+
+        # FIX #7: Penalty for high in-game goal count
+        # 3+ goals at pick = 41% WR vs 49% at 0-1 goals
+        if current_goals > MAX_GOALS_AT_PICK:
+            over_score -= 15
+            logger.debug(f"Penalizing pick: {current_goals} goals already in game (high-score penalty)")
 
         # -----------------
-        # UNDER Calculation
+        # UNDER Calculation — DISABLED
+        # FIX #5: UNDER picks only 35% WR (below breakeven at avg odds ~1.91)
+        # Disabled until UNDER strategy is redesigned.
         # -----------------
         under_score = 0
-        if minute >= 65:
-            if sot_total <= 2:
-                under_score += 45
-            elif sot_total <= 4:
-                under_score += 25
 
-            if da_total <= 50:
-                under_score += 25
-            elif da_total <= 70:
-                under_score += 15
-
-            if goal_diff >= 2:  # One team has put the game away, slower tempo
-                under_score += 15
-
-        # Apply per-league, per-direction historical bias
+        # Apply per-league, per-direction historical bias (OVER only)
         dir_mods = {"over": 0, "under": 0}
         if self.league_mgr:
             dir_mods = self.league_mgr.get_direction_modifiers(league_id, league_name)
             over_score += dir_mods["over"]
-            under_score += dir_mods["under"]
-            if dir_mods["over"] != 0 or dir_mods["under"] != 0:
+            if dir_mods["over"] != 0:
                 logger.debug(
-                    f"League '{league_name}' modifiers: OVER {dir_mods['over']:+d} / UNDER {dir_mods['under']:+d}"
+                    f"League '{league_name}' OVER modifier: {dir_mods['over']:+d}"
                 )
 
-        # Decide raw statistical direction
+        # Decide direction (UNDER disabled — only OVER evaluated)
         raw_direction = None
         raw_edge_score = 0
-        if over_score >= under_score and over_score >= MIN_EDGE_SCORE:
+        if over_score >= MIN_EDGE_SCORE:
             raw_direction = "OVER"
             raw_edge_score = min(99, over_score)
-        elif under_score > over_score and under_score >= MIN_EDGE_SCORE:
-            raw_direction = "UNDER"
-            raw_edge_score = min(99, under_score)
         else:
             return None
 
-        # Check for league contrarian inversion:
-        # If this league has net losses in raw_direction, invert it!
+        # FIX #3/#4: Contrarian inversion now requires >= 5 net losses (see league_manager)
         direction = raw_direction
         edge_score = raw_edge_score
         was_inverted = False

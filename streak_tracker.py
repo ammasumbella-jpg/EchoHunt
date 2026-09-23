@@ -52,10 +52,11 @@ class StreakTracker:
 
     def record_bet_result(self, result: str) -> dict:
         """
-        Record 'WON', 'LOST', 'VOID', or 'PUSH' and update streak metrics.
+        Record 'WON', 'LOST', 'VOID', 'PUSH', 'HALF_WIN', or 'HALF_LOSS' and update streak metrics.
 
-        Per betting rules: PUSH and VOID are stake refunds (no money won or lost).
-        They do NOT count as a loss and do NOT break or affect the current win/loss streak.
+        - VOID / PUSH: stake refunded, streak preserved (no win or loss)
+        - HALF_WIN: half-stake profit — counted as a win for streak purposes
+        - HALF_LOSS: half-stake lost — counted as a loss for streak purposes
         """
         if result in ["VOID", "PUSH"]:
             self.stats["total_voids"] = self.stats.get("total_voids", 0) + 1
@@ -72,20 +73,20 @@ class StreakTracker:
 
         self.stats["total_bets"] = self.stats.get("total_bets", 0) + 1
 
-        if result == "WON":
+        if result in ["WON", "HALF_WIN"]:
             self.stats["total_wins"] += 1
             self.stats["current_win_streak"] += 1
             self.stats["current_loss_streak"] = 0
             if self.stats["current_win_streak"] > self.stats["best_win_streak"]:
                 self.stats["best_win_streak"] = self.stats["current_win_streak"]
-            self.stats["history"].append("W")
-        elif result == "LOST":
+            self.stats["history"].append("HW" if result == "HALF_WIN" else "W")
+        elif result in ["LOST", "HALF_LOSS"]:
             self.stats["total_losses"] += 1
             self.stats["current_loss_streak"] += 1
             self.stats["current_win_streak"] = 0
             if self.stats["current_loss_streak"] > self.stats["worst_loss_streak"]:
                 self.stats["worst_loss_streak"] = self.stats["current_loss_streak"]
-            self.stats["history"].append("L")
+            self.stats["history"].append("HL" if result == "HALF_LOSS" else "L")
 
         # Keep recent history to last 20
         if len(self.stats["history"]) > 20:

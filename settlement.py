@@ -15,12 +15,16 @@ FORCE_SETTLE_AFTER_MINUTES = 130
 
 def evaluate_strict_total_outcome(direction: str, target_line: float, total_goals: int) -> tuple:
     """
-    Evaluates Total Over/Under under strict rules:
-    - ONLY Full Won is calculated as a WIN ('WON').
-    - Half Win (HW, e.g. +0.25) is calculated as a LOSS ('LOST')!
-    - Half Loss (HL, e.g. -0.25) is calculated as a LOSS ('LOST')!
-    - Push (exact whole line, e.g. 0.0) is 'VOID'.
-    - Full Loss (diff <= -0.5) is 'LOST'.
+    Evaluates Total Over/Under Asian handicap outcome:
+    - Full Win  (diff >= +0.5)  -> WON
+    - Half Win  (diff == +0.25) -> HALF_WIN  (50% stake profit; no longer counted as full loss)
+    - Half Loss (diff == -0.25) -> HALF_LOSS (50% stake lost)
+    - Push      (diff ==  0.0)  -> VOID      (full stake refund)
+    - Full Loss (diff <= -0.5)  -> LOST
+
+    FIX #4: Old code counted HW and HL both as full LOST.
+    Real data showed 13 losses from OVER 1.75 HW trap alone.
+    Now correctly returns HALF_WIN / HALF_LOSS for quarter-line splits.
     """
     diff = round(total_goals - target_line if direction == "OVER" else target_line - total_goals, 2)
 
@@ -28,13 +32,13 @@ def evaluate_strict_total_outcome(direction: str, target_line: float, total_goal
     if diff >= 0.5:
         return "WON", f"Full Win (+{diff:.2f} beyond line {target_line})"
 
-    # 2. Asian Quarter Half Win (HW, +0.25) -> STRICTLY CALCULATED AS LOSS!
+    # 2. Asian Quarter Half Win (+0.25) -> HALF WIN (half stake returned as profit)
     elif diff == 0.25:
-        return "LOST", f"Half Win (HW) calculated as LOSS per strict rules (+0.25 on line {target_line})"
+        return "HALF_WIN", f"Half Win (HW) +0.25 on line {target_line} — half stake profit"
 
-    # 3. Asian Quarter Half Loss (HL, -0.25) -> CALCULATED AS LOSS!
+    # 3. Asian Quarter Half Loss (-0.25) -> HALF LOSS (half stake lost)
     elif diff == -0.25:
-        return "LOST", f"Half Loss (HL) calculated as LOSS (-0.25 on line {target_line})"
+        return "HALF_LOSS", f"Half Loss (HL) -0.25 on line {target_line} — half stake lost"
 
     # 4. Push (exact whole line refund)
     elif diff == 0.0:
@@ -56,11 +60,13 @@ class SettlementEngine:
             result = outcome.get("result")
             direction = state.get("direction", "OVER")  # "OVER" or "UNDER"
 
-            # Update streak records (WON, LOST, VOID, PUSH are all handled appropriately)
-            if self.streak_tracker and result in ["WON", "LOST", "VOID", "PUSH"]:
+            # Update streak records
+            # HALF_WIN / HALF_LOSS are passed through; streak_tracker handles them
+            if self.streak_tracker and result in ["WON", "LOST", "VOID", "PUSH", "HALF_WIN", "HALF_LOSS"]:
                 outcome["streak_summary"] = self.streak_tracker.record_bet_result(result)
 
             # Update per-league, per-direction performance records
+            # HALF_WIN counts as a win; HALF_LOSS counts as a loss for league memory
             if self.league_mgr:
                 league_id = state.get("league_id")
                 league_name = state.get("league")
@@ -68,9 +74,9 @@ class SettlementEngine:
                 away = state.get("away_team", "Away")
                 match_desc = f"{home} vs {away}"
 
-                if result == "WON" and league_name:
+                if result in ["WON", "HALF_WIN"] and league_name:
                     self.league_mgr.record_win(league_id, league_name, direction, match_desc)
-                elif result == "LOST" and league_name:
+                elif result in ["LOST", "HALF_LOSS"] and league_name:
                     self.league_mgr.record_loss(league_id, league_name, direction, match_desc)
         return outcome
 

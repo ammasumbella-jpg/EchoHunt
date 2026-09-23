@@ -144,9 +144,15 @@ class TelegramNotifier:
         if result == "WON":
             header = "✅ <b>BET SETTLED: WON!</b> 🚀🎉"
             status_text = f"<b>Profit:</b> +{(odds - 1.0):.2f} Units @ @{odds:.2f}"
+        elif result == "HALF_WIN":
+            header = "🔶 <b>BET SETTLED: HALF WIN</b> ⚡"
+            status_text = f"<b>Profit:</b> +{(odds - 1.0) / 2:.2f} Units (Half Stake @ @{odds:.2f})"
         elif result in ["VOID", "PUSH"]:
             header = f"🔄 <b>BET SETTLED: {result} (REFUNDED)</b> 🔄"
             status_text = "<b>Result:</b> 0.00 Units (Stake Refunded / No Action)"
+        elif result == "HALF_LOSS":
+            header = "🔶 <b>BET SETTLED: HALF LOSS</b> ⚠️"
+            status_text = "<b>Result:</b> -0.50 Units (Half Stake Lost)"
         else:
             header = "❌ <b>BET SETTLED: MISSED</b> ⚠️"
             status_text = f"<b>Result:</b> -1.00 Unit"
@@ -161,10 +167,24 @@ class TelegramNotifier:
                 f"<i>(Positive bias applied to future {direction} picks from this league)</i>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
+        elif result == "HALF_WIN":
+            league_notice = (
+                f"🔶 <b>LEAGUE {direction} RECORD UPDATED:</b>\n"
+                f"• <code>{league}</code> — {direction} Half Win recorded ⚡\n"
+                f"<i>(Half-stake profit. Counted as win for league bias.)</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
         elif result in ["VOID", "PUSH"]:
             league_notice = (
                 f"🔄 <b>LEAGUE {direction} RECORD UNCHANGED:</b>\n"
                 f"• <code>{league}</code> — {result} recorded (Stake refunded, no win/loss impact)\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+        elif result == "HALF_LOSS":
+            league_notice = (
+                f"🔶 <b>LEAGUE {direction} RECORD UPDATED:</b>\n"
+                f"• <code>{league}</code> — {direction} Half Loss recorded ⚠️\n"
+                f"<i>(Half-stake lost. Counted as loss for league bias.)</i>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
         elif result == "LOST":

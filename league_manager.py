@@ -18,6 +18,11 @@ PERFORMANCE_FILE = "league_performance.json"
 MODIFIER_PER_NET = 12
 MAX_MODIFIER = 36
 
+# FIX #3/#4: Minimum net-loss gap required before contrarian inversion fires.
+# Historical data: flipping at 1 net loss gave only 30.8% WR vs 44.4% for normal picks.
+# Require at least 5 net losses before inverting to avoid noisy single-sample flips.
+MIN_NET_LOSSES_FOR_INVERSION = 5
+
 
 def _load_file(path: str, default) -> dict:
     if os.path.exists(path):
@@ -135,11 +140,14 @@ class LeagueManager:
 
     def check_direction_inversion(self, league_id: str, raw_direction: str) -> tuple[bool, str, str]:
         """
-        Inversion rule:
-        If a league has net losses on OVER (losses > wins):
+        Inversion rule (guarded by MIN_NET_LOSSES_FOR_INVERSION):
+        If a league has >= 5 net losses on OVER (losses - wins >= 5):
             When model suggests OVER -> flip to UNDER!
-        If a league has net losses on UNDER (losses > wins):
+        If a league has >= 5 net losses on UNDER:
             When model suggests UNDER -> flip to OVER!
+
+        Historical data showed flipping at 1 net loss only achieved 30.8% WR
+        vs 44.4% for normal picks. The 5-loss threshold prevents noisy early flips.
 
         Returns:
             (is_inverted: bool, final_direction: str, reason: str)
@@ -153,20 +161,22 @@ class LeagueManager:
         under_rec = entry.get("under", {"wins": 0, "losses": 0})
 
         if raw_direction == "OVER":
-            if over_rec["losses"] > over_rec["wins"]:
-                diff = over_rec["losses"] - over_rec["wins"]
+            diff = over_rec["losses"] - over_rec["wins"]
+            if diff >= MIN_NET_LOSSES_FOR_INVERSION:
                 return (
                     True,
                     "UNDER",
-                    f"League OVER record is {over_rec['wins']}W-{over_rec['losses']}L (-{diff} net). Flipped to UNDER!"
+                    f"League OVER record is {over_rec['wins']}W-{over_rec['losses']}L "
+                    f"(-{diff} net >= {MIN_NET_LOSSES_FOR_INVERSION} threshold). Flipped to UNDER!"
                 )
         elif raw_direction == "UNDER":
-            if under_rec["losses"] > under_rec["wins"]:
-                diff = under_rec["losses"] - under_rec["wins"]
+            diff = under_rec["losses"] - under_rec["wins"]
+            if diff >= MIN_NET_LOSSES_FOR_INVERSION:
                 return (
                     True,
                     "OVER",
-                    f"League UNDER record is {under_rec['wins']}W-{under_rec['losses']}L (-{diff} net). Flipped to OVER!"
+                    f"League UNDER record is {under_rec['wins']}W-{under_rec['losses']}L "
+                    f"(-{diff} net >= {MIN_NET_LOSSES_FOR_INVERSION} threshold). Flipped to OVER!"
                 )
 
         return False, raw_direction, ""
