@@ -19,19 +19,30 @@ REQUEST_HEADERS = {
 POLL_INTERVAL_SECONDS = 60  # Safe polling delay to avoid rate limits/blocks
 STATE_FILE_PATH = "state.json"
 
-# Heuristic & Strategy Thresholds
+# Heuristic & Strategy Thresholds (Postmortem Optimized)
 MIN_MATCH_MINUTE = 45       # Look for matches in the 2nd half or late 1st half
-MAX_MATCH_MINUTE = 80       # Don't pick too late to allow time for settlement
+MAX_MATCH_MINUTE = 80       # Late momentum picks (75-80') have 62.5% win rate
 MIN_EDGE_SCORE = 65         # Minimum edge score required to trigger a pick
-MIN_ODDS = 1.40             # Minimum acceptable decimal odds
-MAX_ODDS = 3.50             # Maximum realistic decimal odds
-MAX_GOALS_AT_PICK = 2       # Skip OVER picks when 3+ goals already in game (41% WR vs 49% at 0-1)
+MIN_ODDS = 1.60             # Value odds floor
+MAX_ODDS = 2.05             # Longshots (>2.05) have poor 37% win rate; capped for reliability
 
-# Leagues with 0% historical win rate — automatically excluded from all picks
-# (Derived from 207-bet real performance analysis)
+# Strict Statistical Momentum Filters (Critical Postmortem Insights)
+# Matches with SoT < 5 lost heavily (-8.64u, 40% WR)
+MIN_SOT = 5                 # Hard floor: at least 5 shots on target required
+MIN_DA = 35                 # Hard floor: at least 35 dangerous attacks required
+MIN_SOT_RATE = 0.08         # Shot intensity: minimum 1 shot on target per 12.5 mins
+
+# Leagues with chronically negative ROI / high loss rate in live betting history
 BLACKLISTED_LEAGUES = [
     "Israel Liga Bet North",
     "Romania Liga 2",
     "Serbia U19 League",
     "Peru Campeonato Nacional Women",
+    "Africa Cup of Nations Qualification",
+    "Mexico Liga TDP",
+    "CONCACAF Nations League",
+    "Europe Friendlies",
+    "Brazil Serie B",
+    "U19 International",
 ]
+

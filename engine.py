@@ -12,9 +12,12 @@ from config import (
     MIN_ODDS,
     MAX_ODDS,
     MAX_ODDS_LOOKUPS,
-    MAX_GOALS_AT_PICK,
+    MIN_SOT,
+    MIN_DA,
+    MIN_SOT_RATE,
     BLACKLISTED_LEAGUES,
 )
+
 
 logger = logging.getLogger("engine")
 
@@ -101,52 +104,67 @@ class PredictionEngine:
         goal_diff = abs(h_goals - a_goals)
 
         # -----------------
-        # OVER Calculation (Fully revised from 207-bet real history)
+        # CRITICAL POSTMORTEM GATES (Derived from 281 real bet outcomes)
+        # -----------------
+        # 1. SoT Hard Floor: Games with SoT < 5 lost heavily (40% WR, -8.64u loss)
+        if sot_total < MIN_SOT:
+            logger.debug(f"Skipping match at {minute}': SoT {sot_total} < {MIN_SOT} (insufficient offensive output)")
+            return None
+
+        # 2. DA Hard Floor: Avoid sluggish games with low offensive tempo
+        if da_total < MIN_DA:
+            logger.debug(f"Skipping match at {minute}': DA {da_total} < {MIN_DA} (low match tempo)")
+            return None
+
+        # 3. Shot Frequency Rate: At least 1 SoT every ~12 minutes elapsed
+        sot_rate = sot_total / max(minute, 1)
+        if sot_rate < MIN_SOT_RATE:
+            logger.debug(f"Skipping match at {minute}': SoT rate {sot_rate:.2f} < {MIN_SOT_RATE} (shot pace too slow)")
+            return None
+
+        # -----------------
+        # OVER Calculation (Recalibrated on verified profitability)
         # -----------------
         over_score = 0
 
-        # FIX #1: SoT scoring revised — only SoT >= 11 is a strong win signal (55% WR)
-        # SoT 8-10 was 38% WR (weak — reduce); SoT 6-7 was 45% WR (keep)
+        # Shots on Target scoring (direct positive correlation with wins)
         if sot_total >= 11:
-            over_score += 50   # Best predictor: 55% WR historically
+            over_score += 45   # Proven high win rate
         elif sot_total >= 8:
-            over_score += 20   # Weak (38% WR) — reduced from old 35
+            over_score += 35
         elif sot_total >= 6:
-            over_score += 25   # Decent (45% WR)
-        elif sot_total >= 4:
-            over_score += 10
-
-        # FIX #2: DA weights REVERSED from original
-        # Old logic boosted high DA — real data shows HIGH DA predicts LOSSES:
-        #   DA 0-55:  70% WR | DA 55-80: 54% WR | DA 80-110: 37% WR | DA 110+: 35% WR
-        if da_total <= 55:
-            over_score += 20   # Low DA = efficient scoring game (70% WR)
-        elif da_total <= 80:
-            over_score += 5    # Moderate DA, small boost (54% WR)
-        elif da_total <= 110:
-            over_score -= 10   # High DA = teams attack but don't convert (37% WR)
-        else:
-            over_score -= 20   # Very high DA = biggest loss predictor (35% WR)
-
-        # Corners pressure (unchanged)
-        if corn_total >= 8:
-            over_score += 10
-
-        # Close game pressure (0-0, 1-1, or 1-goal difference where teams must attack)
-        if goal_diff <= 1:
+            over_score += 25
+        elif sot_total >= 5:
             over_score += 15
 
-        # Minute windows revised: 45-55' and 75-80' are good; 70-75' is blocked above
-        if 45 <= minute <= 55:
-            over_score += 10   # Early 2nd half momentum (52% WR)
-        elif 75 <= minute <= 80:
-            over_score += 10   # Late push window (55% WR)
+        # Dangerous Attacks: Healthy tempo (40-75) produces 55-60% WR
+        if 40 <= da_total <= 75:
+            over_score += 20
+        elif da_total > 105:
+            over_score -= 10   # Extremely high DA without goals indicates finishing deficiency
 
-        # FIX #7: Penalty for high in-game goal count
-        # 3+ goals at pick = 41% WR vs 49% at 0-1 goals
-        if current_goals > MAX_GOALS_AT_PICK:
-            over_score -= 15
-            logger.debug(f"Penalizing pick: {current_goals} goals already in game (high-score penalty)")
+        # Corner Pressure
+        if corn_total >= 8:
+            over_score += 10
+        elif corn_total >= 5:
+            over_score += 5
+
+        # Match State: Competitive close games force attacks
+        if goal_diff <= 1:
+            over_score += 10
+
+        # Timing Windows: 75-80' late push is highest performing (62.5% WR, +7.35u)
+        if 75 <= minute <= 80:
+            over_score += 20
+        elif 45 <= minute <= 55:
+            over_score += 10
+
+        # Goal Momentum: 3+ goals in match hit OVER at 65.7% WR (+7.75u profit)
+        if current_goals >= 3:
+            over_score += 15
+        elif current_goals == 1:
+            over_score += 5
+
 
         # -----------------
         # UNDER Calculation — DISABLED
@@ -247,6 +265,11 @@ class PredictionEngine:
         prediction = None
 
         # Check recent live odds rows to find an active qualifying line
+        # Postmortem insight: lines needing <= 0.75 goals have 66% WR (+8.94u).
+        # Flat whole lines needing exactly 1.0 goal had only 28% WR (-2.48u).
+        best_candidate = None
+        fallback_candidate = None
+
         for tick in total_market["odds"][:5]:
             try:
                 line_val = float(tick.get("row2"))
@@ -260,11 +283,17 @@ class PredictionEngine:
 
             if direction == "OVER":
                 if over_odds and MIN_ODDS <= over_odds <= MAX_ODDS:
-                    if line_val > current_goals:
-                        selected_odds = over_odds
-                        target_line = line_val
-                        prediction = f"TOTAL OVER {line_val:g}"
-                        break
+                    line_diff = round(line_val - current_goals, 2)
+                    # Must need at least 0.25 goals and at most 1.75 goals
+                    if 0.25 <= line_diff <= 1.75:
+                        cand = (over_odds, line_val, f"TOTAL OVER {line_val:g}")
+                        # Prefer half/quarter lines over flat 1.0 goal line
+                        if line_diff != 1.0 and not best_candidate:
+                            best_candidate = cand
+                            break
+                        elif not fallback_candidate:
+                            fallback_candidate = cand
+
             elif direction == "UNDER":
                 if under_odds and MIN_ODDS <= under_odds <= MAX_ODDS:
                     if line_val >= current_goals:
@@ -272,6 +301,12 @@ class PredictionEngine:
                         target_line = line_val
                         prediction = f"TOTAL UNDER {line_val:g}"
                         break
+
+        if direction == "OVER":
+            chosen = best_candidate or fallback_candidate
+            if chosen:
+                selected_odds, target_line, prediction = chosen
+
 
         if not selected_odds:
             logger.info(f"Match {match_id} ({direction}) did not have qualifying live odds on total market.")
